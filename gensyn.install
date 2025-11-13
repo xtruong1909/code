@@ -365,7 +365,7 @@ else
         exit 1
     fi
 fi
-wget -O $USER_HOME/gensyn/run/bootnodes.txt https://raw.githubusercontent.com/biib6688/code/refs/heads/main/bootnodes.txt
+
 cd $RL_SWARM_DIR && git fetch origin && git reset --hard origin/main 
 
 echo ""

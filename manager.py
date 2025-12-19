@@ -46,7 +46,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         communication_kwargs['initial_peers'] = custom_bootnodes
         get_logger().info(f"⚡ Using custom bootnodes: {custom_bootnodes}")
         
-       rewards_ollama_model = kwargs.get("rewards_ollama_model", 'qwen2.5-coder:1.5b-instruct')
+        rewards_ollama_model = kwargs.get("rewards_ollama_model", 'qwen2.5-coder:1.5b-instruct')
 
         communication = HivemindBackend(**communication_kwargs)
 
@@ -87,7 +87,7 @@ class SwarmGameManager(BaseGameManager, DefaultGameManagerMixin):
         if self.hf_token not in [None, "None"]:
             self._configure_hf_hub(hf_push_frequency)
 
-        get_logger().info('============!!!Joining CodeZero Swarm!!!============')
+        get_logger().info('============ Joining CodeZero Swarm!!!============')
         get_logger().info(
             f"🐝 Hello [{get_name_from_peer_id(self.peer_id)}] [{self.peer_id}]!"
         )

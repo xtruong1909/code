@@ -194,7 +194,7 @@ while true; do
     LOG_LAST_30S=$(journalctl -u rl-swarm --since "30 seconds ago" -o cat 2>/dev/null || echo "")
     current_time=$(date +%s)
 
-    if echo "$LOG_LAST_30S" | grep -Eq "submission completed|Already finished"; then
+    if echo "$LOG_LAST_30S" | grep -Eq "Joining round"; then
         last_detect_time=$current_time
 
         if (( CURRENT_INDEX > MAX_FOLDER )); then

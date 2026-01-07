@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 # =====================================================
@@ -25,14 +24,17 @@ FAUCET_NATIVE="https://faucet.shelbynet.shelby.xyz/fund"
 FAUCET_AMOUNT=1000000000
 
 # =====================================================
-# TIME GATE: SAU 12:00 UTC THU 5
+# TIME GATE: KIEM TRA 12:00 UTC THU 5
 # =====================================================
-UTC_DAY="$(date -u +%u)"    # 1=Mon ... 4=Thu
+UTC_DAY="$(date -u +%u)"    # 1=Mon ... 4=Thu ... 7=Sun
 UTC_HOUR="$(date -u +%H)"
 
+SKIP_FAUCET=false
 if (( UTC_DAY < 4 || (UTC_DAY == 4 && UTC_HOUR < 12) )); then
-  echo "[$(date -u)] CHUA DEN 12:00 UTC THU 5 -> SKIP" >> "$LOG"
-  exit 0
+  echo "[$(date -u)] CHUA DEN 12:00 UTC THU 5 -> BO QUA FAUCET" >> "$LOG"
+  SKIP_FAUCET=true
+else
+  echo "[$(date -u)] DA QUA 12:00 UTC THU 5 -> CHAY DAY DU" >> "$LOG"
 fi
 
 # =====================================================
@@ -50,6 +52,13 @@ TOTAL_PROXY="$(wc -l < "$PROXIES")"
 if (( TOTAL_WALLET == 0 || TOTAL_PROXY == 0 )); then
   echo "WALLET / PROXY RONG" >> "$LOG"
   exit 1
+fi
+
+# RESET VE 1 NEU VUOT QUA SO VI
+if (( START_IDX > TOTAL_WALLET )); then
+  echo "[$(date -u)] RESET STATE VE 1 (da vuot qua $TOTAL_WALLET vi)" >> "$LOG"
+  START_IDX=1
+  echo 1 > "$STATE"
 fi
 
 # =====================================================
@@ -85,42 +94,53 @@ wallet_idx="$START_IDX"
 while (( wallet_idx <= TOTAL_WALLET )); do
   echo "=== WALLET $wallet_idx / $TOTAL_WALLET | PROXY $proxy_idx ===" >> "$LOG"
 
+  # ===== BUOC 1: DOI VI =====
   wallet_line="$(sed -n "${wallet_idx}p" "$WALLETS")"
   IFS='|' read -r priv address <<< "$wallet_line"
 
-  # ===== UPDATE CONFIG =====
   sed -i \
     -e "s|private_key:.*|private_key: ed25519-priv-${priv#0x}|" \
     -e "s|address:.*|address: \"${address}\"|" \
     "$CONF"
+  
+  echo "DOI VI: $address" >> "$LOG"
 
-  # ===== SET PROXY =====
+  # ===== BUOC 2: DOI PROXY =====
   set_proxy "$proxy_idx"
+  echo "DOI PROXY: $proxy_idx" >> "$LOG"
 
-  # ================= FAUCET SHELBYUSD =================
-  echo "FAUCET SHELBYUSD LAN 1 | $address" >> "$LOG"
-  faucet "$FAUCET_USD" "$address"
-  sleep 10
+  # ===== BUOC 3: FAUCET (NEU DUNG DIEU KIEN) =====
+  if [[ "$SKIP_FAUCET" == false ]]; then
+    echo "FAUCET SHELBYUSD LAN 1 | $address" >> "$LOG"
+    faucet "$FAUCET_USD" "$address"
+    sleep 10
 
-  echo "FAUCET SHELBYUSD LAN 2 | $address" >> "$LOG"
-  faucet "$FAUCET_USD" "$address"
-  sleep 10
+    echo "FAUCET SHELBYUSD LAN 2 | $address" >> "$LOG"
+    faucet "$FAUCET_USD" "$address"
+    sleep 10
 
-  # ================= FAUCET NATIVE =================
-  echo "FAUCET FUND LAN 1 | $address" >> "$LOG"
-  faucet "$FAUCET_NATIVE" "$address"
-  sleep 10
+    echo "FAUCET FUND LAN 1 | $address" >> "$LOG"
+    faucet "$FAUCET_NATIVE" "$address"
+    sleep 10
 
-  echo "FAUCET FUND LAN 2 | $address" >> "$LOG"
-  faucet "$FAUCET_NATIVE" "$address"
+    echo "FAUCET FUND LAN 2 | $address" >> "$LOG"
+    faucet "$FAUCET_NATIVE" "$address"
+    sleep 10
+  else
+    echo "BO QUA FAUCET CHO WALLET $wallet_idx" >> "$LOG"
+  fi
 
-  # ================= DELAY NGAU NHIEN =================
+  # ===== BUOC 4: DELAY NGAU NHIEN =====
   WAIT=$((RANDOM % 60 + 30))   # 30–90s
+  echo "DELAY: ${WAIT}s" >> "$LOG"
   sleep "$WAIT"
 
-  # ================= UPLOAD =================
+  # ===== BUOC 5: UPLOAD FILE =====
   mapfile -d '' -t files < <(find "$DATA_DIR" -maxdepth 1 -type f -print0)
-  (( ${#files[@]} == 0 )) && break
+  if (( ${#files[@]} == 0 )); then
+    echo "HET FILE UPLOAD" >> "$LOG"
+    break
+  fi
 
   file="${files[RANDOM % ${#files[@]}]}"
   name="$(basename "$file")"
@@ -131,6 +151,8 @@ while (( wallet_idx <= TOTAL_WALLET )); do
   tmp="$(mktemp)"
   START_TIME="$(date '+%Y-%m-%d %H:%M:%S')"
 
+  echo "UPLOAD: $name (expiration: $EXP)" >> "$LOG"
+  
   if shelby upload "$file" "$DEST_DIR/$name" \
     --expiration "$EXP" \
     --assume-yes | tee "$tmp"; then
@@ -139,21 +161,33 @@ while (( wallet_idx <= TOTAL_WALLET )); do
     shelby_link="$(grep -A1 "Shelby Explorer" "$tmp" | tail -n1 | xargs || true)"
 
     {
-      echo "[$START_TIME] WALLET $wallet_idx"
+      echo "[$START_TIME] WALLET $wallet_idx UPLOAD THANH CONG"
       echo "Aptos: $aptos"
       echo "Shelby: $shelby_link"
       echo ""
     } >> "$LOG"
 
     [[ -n "$aptos" && -n "$shelby_link" ]] && rm -f "$file"
+  else
+    echo "[$START_TIME] WALLET $wallet_idx UPLOAD THAT BAI" >> "$LOG"
   fi
 
   rm -f "$tmp"
 
-  # ===== NEXT WALLET / PROXY =====
+  # ===== BUOC 6: CHUYEN SANG VI TIEP THEO =====
   wallet_idx=$((wallet_idx + 1))
   proxy_idx=$((proxy_idx + 1))
   (( proxy_idx > TOTAL_PROXY )) && proxy_idx=1
 
+  # RESET VE 1 NEU VUOT QUA SO VI
+  if (( wallet_idx > TOTAL_WALLET )); then
+    echo "DA HOAN THANH TAT CA $TOTAL_WALLET VI, RESET VE 1" >> "$LOG"
+    wallet_idx=1
+  fi
+
   echo "$wallet_idx" > "$STATE"
+  echo "HOAN THANH WALLET $((wallet_idx - 1)), CHUYEN SANG WALLET $wallet_idx" >> "$LOG"
+  echo "---" >> "$LOG"
 done
+
+echo "DA XU LY XONG TAT CA $TOTAL_WALLET VI" >> "$LOG"

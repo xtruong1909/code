@@ -17,8 +17,11 @@ DEST_DIR="files"
 
 IPCONF="/root/tun2socks/ip.conf"
 
-# ===== FAUCET =====
-FAUCET_URL="https://faucet.shelbynet.shelby.xyz/fund?asset=shelbyusd"
+# =====================================================
+# FAUCET CONFIG
+# =====================================================
+FAUCET_USD="https://faucet.shelbynet.shelby.xyz/fund?asset=shelbyusd"
+FAUCET_NATIVE="https://faucet.shelbynet.shelby.xyz/fund"
 FAUCET_AMOUNT=1000000000
 
 # =====================================================
@@ -60,7 +63,21 @@ set_proxy() {
 }
 
 # =====================================================
-# MAIN LOOP: WALLET → FAUCET → UPLOAD
+# HELPER: FAUCET
+# =====================================================
+faucet() {
+  local url="$1"
+  local address="$2"
+
+  curl -s -X POST "$url" \
+    -H "Content-Type: application/json" \
+    -H "Origin: https://docs.shelby.xyz" \
+    -d "{\"address\":\"$address\",\"amount\":$FAUCET_AMOUNT}" >> "$LOG"
+  echo "" >> "$LOG"
+}
+
+# =====================================================
+# MAIN LOOP
 # =====================================================
 proxy_idx=1
 wallet_idx="$START_IDX"
@@ -71,37 +88,37 @@ while (( wallet_idx <= TOTAL_WALLET )); do
   wallet_line="$(sed -n "${wallet_idx}p" "$WALLETS")"
   IFS='|' read -r priv address <<< "$wallet_line"
 
-  # ===== SET CONFIG =====
+  # ===== UPDATE CONFIG =====
   sed -i \
     -e "s|private_key:.*|private_key: ed25519-priv-${priv#0x}|" \
     -e "s|address:.*|address: \"${address}\"|" \
     "$CONF"
 
-  # ===== SET PROXY (CHO CA 2 FAUCET) =====
+  # ===== SET PROXY =====
   set_proxy "$proxy_idx"
 
-  # ================= FAUCET LAN 1 =================
-  echo "FAUCET LAN 1 | $address" >> "$LOG"
-  curl -s -X POST "$FAUCET_URL" \
-    -H "Content-Type: application/json" \
-    -H "Origin: https://docs.shelby.xyz" \
-    -d "{\"address\":\"$address\",\"amount\":$FAUCET_AMOUNT}" >> "$LOG"
-  echo "" >> "$LOG"
-
+  # ================= FAUCET SHELBYUSD =================
+  echo "FAUCET SHELBYUSD LAN 1 | $address" >> "$LOG"
+  faucet "$FAUCET_USD" "$address"
   sleep 10
 
-  # ================= FAUCET LAN 2 =================
-  echo "FAUCET LAN 2 | $address" >> "$LOG"
-  curl -s -X POST "$FAUCET_URL" \
-    -H "Content-Type: application/json" \
-    -H "Origin: https://docs.shelby.xyz" \
-    -d "{\"address\":\"$address\",\"amount\":$FAUCET_AMOUNT}" >> "$LOG"
-  echo "" >> "$LOG"
+  echo "FAUCET SHELBYUSD LAN 2 | $address" >> "$LOG"
+  faucet "$FAUCET_USD" "$address"
+  sleep 10
 
-  # ================= UPLOAD =================
+  # ================= FAUCET NATIVE =================
+  echo "FAUCET FUND LAN 1 | $address" >> "$LOG"
+  faucet "$FAUCET_NATIVE" "$address"
+  sleep 10
+
+  echo "FAUCET FUND LAN 2 | $address" >> "$LOG"
+  faucet "$FAUCET_NATIVE" "$address"
+
+  # ================= DELAY NGAU NHIEN =================
   WAIT=$((RANDOM % 60 + 30))   # 30–90s
   sleep "$WAIT"
 
+  # ================= UPLOAD =================
   mapfile -d '' -t files < <(find "$DATA_DIR" -maxdepth 1 -type f -print0)
   (( ${#files[@]} == 0 )) && break
 
@@ -133,7 +150,7 @@ while (( wallet_idx <= TOTAL_WALLET )); do
 
   rm -f "$tmp"
 
-  # ===== NEXT WALLET (DOI PROXY) =====
+  # ===== NEXT WALLET / PROXY =====
   wallet_idx=$((wallet_idx + 1))
   proxy_idx=$((proxy_idx + 1))
   (( proxy_idx > TOTAL_PROXY )) && proxy_idx=1

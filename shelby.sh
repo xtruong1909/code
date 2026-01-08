@@ -86,12 +86,14 @@ faucet() {
 }
 
 # =====================================================
-# MAIN LOOP
+# MAIN LOOP - MAP ĐÚNG VÍ VỚI PROXY
 # =====================================================
-proxy_idx=1
 wallet_idx="$START_IDX"
 
 while (( wallet_idx <= TOTAL_WALLET )); do
+  # Tính proxy_idx dựa trên wallet_idx (map 1:1, lặp lại nếu hết proxy)
+  proxy_idx=$(( (wallet_idx - 1) % TOTAL_PROXY + 1 ))
+  
   echo "=== WALLET $wallet_idx / $TOTAL_WALLET | PROXY $proxy_idx ===" >> "$LOG"
 
   # ===== BUOC 1: DOI VI =====
@@ -131,7 +133,7 @@ while (( wallet_idx <= TOTAL_WALLET )); do
   fi
 
   # ===== BUOC 4: DELAY NGAU NHIEN =====
-  WAIT=$((RANDOM % 60 + 30))   # 30–90s
+  WAIT=$((RANDOM % 30 + 15))
   echo "DELAY: ${WAIT}s" >> "$LOG"
   sleep "$WAIT"
 
@@ -176,8 +178,6 @@ while (( wallet_idx <= TOTAL_WALLET )); do
 
   # ===== BUOC 6: CHUYEN SANG VI TIEP THEO =====
   wallet_idx=$((wallet_idx + 1))
-  proxy_idx=$((proxy_idx + 1))
-  (( proxy_idx > TOTAL_PROXY )) && proxy_idx=1
 
   # RESET VE 1 NEU VUOT QUA SO VI
   if (( wallet_idx > TOTAL_WALLET )); then

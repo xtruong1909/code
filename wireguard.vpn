@@ -1,0 +1,103 @@
+#!/bin/bash
+
+# WireGuard Full Port Forwarding Setup
+# Forward tất cả traffic từ VPN server về client
+
+set -e
+
+echo "================================"
+echo "WireGuard Port Forward Setup"
+echo "================================"
+echo ""
+
+# Kiểm tra quyền root
+if [[ $EUID -ne 0 ]]; then
+   echo "Script can chay voi quyen root (sudo)" 
+   exit 1
+fi
+
+# Lấy thông tin
+echo "Chon che do port forwarding:"
+echo "1) Forward doan port cu the (vi du: 20000-40000)"
+echo "2) Forward mot so port nhat dinh (vi du: 80,443,30303)"
+read -p "Nhap lua chon (1/2): " MODE
+
+# Lấy network interface
+INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
+echo "Network Interface: $INTERFACE"
+
+# Client VPN IP
+CLIENT_IP="10.0.0.2"
+echo "Client VPN IP: $CLIENT_IP"
+echo ""
+
+# Đọc private key và public key
+cd /etc/wireguard
+if [ ! -f "server_private.key" ]; then
+    echo "Không tìm thấy server_private.key. Chạy script setup trước!"
+    exit 1
+fi
+
+SERVER_PRIVATE_KEY=$(cat server_private.key)
+CLIENT_PUBLIC_KEY=$(cat client_public.key)
+
+# Tao iptables rules dua vao mode
+# Su dung -I (INSERT) thay vi -A (APPEND) de rules WireGuard duoc uu tien cao hon Docker
+if [ "$MODE" == "1" ]; then
+    read -p "Nhap port bat dau: " START_PORT
+    read -p "Nhap port ket thuc: " END_PORT
+    echo "Se forward port $START_PORT-$END_PORT ve client..."
+    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
+    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -D PREROUTING -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -D PREROUTING -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
+
+elif [ "$MODE" == "2" ]; then
+    read -p "Nhap cac port cach nhau boi dau phay (vi du: 80,443,30303): " PORTS
+    echo "Se forward port: $PORTS ve client..."
+    
+    # Tao rules cho tung port voi INSERT de uu tien cao
+    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE"
+    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE"
+    
+    IFS=',' read -ra PORT_ARRAY <<< "$PORTS"
+    for PORT in "${PORT_ARRAY[@]}"; do
+        PORT=$(echo $PORT | xargs) # trim whitespace
+        POSTUP="$POSTUP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p tcp --dport $PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p udp --dport $PORT -j DNAT --to-destination $CLIENT_IP"
+        POSTDOWN="$POSTDOWN; iptables -t nat -D PREROUTING -i $INTERFACE -p tcp --dport $PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -D PREROUTING -i $INTERFACE -p udp --dport $PORT -j DNAT --to-destination $CLIENT_IP"
+    done
+else
+    echo "Lua chon khong hop le!"
+    exit 1
+fi
+
+# Dung WireGuard
+echo "Dung WireGuard..."
+wg-quick down wg0 2>/dev/null || true
+
+# Tao file cau hinh moi
+echo "Tạo cấu hình mới với port forwarding..."
+cat > /etc/wireguard/wg0.conf << EOF
+[Interface]
+Address = 10.0.0.1/24
+ListenPort = 51820
+PrivateKey = $SERVER_PRIVATE_KEY
+PostUp = $POSTUP
+PostDown = $POSTDOWN
+
+# Client 1
+[Peer]
+PublicKey = $CLIENT_PUBLIC_KEY
+AllowedIPs = 10.0.0.2/32
+EOF
+
+# Khoi dong lai WireGuard
+echo "Khoi dong WireGuard voi cau hinh moi..."
+wg-quick up wg0
+
+# Cau hinh tren client
+echo ""
+echo "Copy toan bo doan code ben duoi sau do paste vao vps client"
+echo "sudo apt install wireguard -y"
+echo "cat > /etc/wireguard/client.conf << EOF"
+echo "$(cat /etc/wireguard/client.conf)"
+echo "EOF"
+echo "wg-quick up wg0"

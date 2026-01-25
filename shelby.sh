@@ -123,7 +123,7 @@ set_proxy() {
         
         if timeout 10 curl -s -m 10 https://ifconfig.me &>/dev/null; then
           # Lấy IP hiện tại qua proxy
-          current_ip="$(timeout 10 curl -s -m 10 https://ifconfig.me 2>/dev/null || echo 'N/A')"
+          current_ip="$(curl -4 ifconfig.me 2>/dev/null || echo 'N/A')"
           echo "[$(date -u)] ✓ PROXY #$idx ($proxy_info) HOẠT ĐỘNG TỐT | IP hiện tại: $current_ip" >> "$LOG"
           return 0
         else

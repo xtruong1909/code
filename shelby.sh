@@ -40,7 +40,6 @@ if (( UTC_DAY == 4 )); then
   echo "[$(date -u)] HOM NAY LA THU 5 -> CHAY FAUCET" >> "$LOG"
   SKIP_FAUCET=false
 else
-  echo "[$(date -u)] HOM NAY KHONG PHAI THU 5 (day=$UTC_DAY) -> BO QUA FAUCET" >> "$LOG"
   SKIP_FAUCET=true
 fi
 
@@ -111,15 +110,12 @@ set_proxy() {
   local retry=0
   local proxy_info="$(get_proxy_info "$idx")"
   
-  echo "[$(date -u)] Đang test PROXY #$idx | IP: $proxy_info" >> "$LOG"
-  
   while (( retry < MAX_RETRY )); do
     if sed -n "${idx}p" "$PROXIES" > "$IPCONF" 2>/dev/null; then
       if systemctl restart tun2socks 2>&1 | tee -a "$LOG"; then
         sleep 5
         
         # KIỂM TRA PROXY CÓ HOẠT ĐỘNG KHÔNG
-        echo "[$(date -u)] Kiểm tra kết nối PROXY #$idx..." >> "$LOG"
         
         if timeout 10 curl -s -m 10 https://ifconfig.me &>/dev/null; then
           # Lấy IP hiện tại qua proxy
@@ -249,13 +245,10 @@ while true; do
     echo "[$(date -u)] FAUCET FUND LAN 2 | $address" >> "$LOG"
     faucet "$FAUCET_NATIVE" "$address" || echo "[$(date -u)] BO QUA FAUCET NATIVE LAN 2" >> "$LOG"
     sleep 10
-  else
-    echo "[$(date -u)] BO QUA FAUCET CHO WALLET $wallet_idx" >> "$LOG"
   fi
 
   # ===== BƯỚC 4: DELAY NGẪU NHIÊN =====
   WAIT=$((RANDOM % 30 + 10))
-  echo "[$(date -u)] DELAY: ${WAIT}s" >> "$LOG"
   sleep "$WAIT"
 
   # ===== BƯỚC 5: UPLOAD FILE =====
@@ -300,8 +293,7 @@ while true; do
   # ===== BƯỚC 6: CHUYỂN SANG VÍ TIẾP THEO =====
   wallet_idx=$((wallet_idx + 1))
   echo "$wallet_idx" > "$STATE"
-  echo "[$(date -u)] HOAN THANH WALLET $((wallet_idx - 1)), CHUYEN SANG WALLET $wallet_idx" >> "$LOG"
-  echo "---" >> "$LOG"
+
 done
 
 echo "[$(date -u)] DA XU LY XONG TAT CA $TOTAL_WALLET VI" >> "$LOG"

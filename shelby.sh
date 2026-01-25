@@ -30,17 +30,18 @@ MAX_RETRY=3
 TIMEOUT=30
 
 # =====================================================
-# TIME GATE: KIEM TRA 12:00 UTC THU 5
+# TIME GATE: KIEM TRA CHI CHAY VAO THU 5
 # =====================================================
 UTC_DAY="$(date -u +%u)"    # 1=Mon ... 4=Thu ... 7=Sun
 UTC_HOUR="$(date -u +%H)"
 
 SKIP_FAUCET=false
-if (( UTC_DAY < 4 || (UTC_DAY == 4 && UTC_HOUR < 12) )); then
-  echo "[$(date -u)] CHUA DEN 12:00 UTC THU 5 -> BO QUA FAUCET" >> "$LOG"
-  SKIP_FAUCET=true
+if (( UTC_DAY == 4 )); then
+  echo "[$(date -u)] HOM NAY LA THU 5 -> CHAY FAUCET" >> "$LOG"
+  SKIP_FAUCET=false
 else
-  echo "[$(date -u)] DA QUA 12:00 UTC THU 5 -> CHAY DAY DU" >> "$LOG"
+  echo "[$(date -u)] HOM NAY KHONG PHAI THU 5 (day=$UTC_DAY) -> BO QUA FAUCET" >> "$LOG"
+  SKIP_FAUCET=true
 fi
 
 # =====================================================

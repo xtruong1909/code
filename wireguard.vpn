@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# WireGuard Full Port Forwarding Setup
-# Forward tất cả traffic từ VPN server về client
+# WireGuard Full Port Forwarding Setup with LAN Routing
+# Forward tất cả traffic từ VPN server về client và cho phép truy cập các dải LAN
 
 set -e
 
@@ -12,15 +12,14 @@ echo ""
 
 # Kiểm tra quyền root
 if [[ $EUID -ne 0 ]]; then
-   echo "Script can chay voi quyen root (sudo)" 
+   echo "Script cần chạy với quyền root (sudo)" 
    exit 1
 fi
 
-# Lấy thông tin
-echo "Chon che do port forwarding:"
-echo "1) Forward doan port cu the (vi du: 20000-40000)"
-echo "2) Forward mot so port nhat dinh (vi du: 80,443,30303)"
-read -p "Nhap lua chon (1/2): " MODE
+# Sử dụng domain động thay vì IP tĩnh
+SERVER_DOMAIN="annie19.ddns.net"
+echo "Server Domain: $SERVER_DOMAIN"
+echo ""
 
 # Lấy network interface
 INTERFACE=$(ip route | grep default | awk '{print $5}' | head -n1)
@@ -31,32 +30,110 @@ CLIENT_IP="10.0.0.2"
 echo "Client VPN IP: $CLIENT_IP"
 echo ""
 
-# Đọc private key và public key
+# Tạo thư mục cấu hình nếu chưa có
+mkdir -p /etc/wireguard
 cd /etc/wireguard
-if [ ! -f "server_private.key" ]; then
-    echo "Không tìm thấy server_private.key. Chạy script setup trước!"
-    exit 1
+
+# Kiểm tra và tạo/tái sử dụng khóa cho Server
+if [ -f "server_private.key" ] && [ -f "server_public.key" ]; then
+    echo "Sử dụng lại khóa Server cũ..."
+    SERVER_PRIVATE_KEY=$(cat server_private.key)
+    SERVER_PUBLIC_KEY=$(cat server_public.key)
+else
+    echo "Tạo khóa mới cho Server..."
+    wg genkey | tee server_private.key | wg pubkey > server_public.key
+    chmod 600 server_private.key
+    SERVER_PRIVATE_KEY=$(cat server_private.key)
+    SERVER_PUBLIC_KEY=$(cat server_public.key)
 fi
 
-SERVER_PRIVATE_KEY=$(cat server_private.key)
-CLIENT_PUBLIC_KEY=$(cat client_public.key)
+# Kiểm tra và tạo/tái sử dụng khóa cho Client
+if [ -f "client_private.key" ] && [ -f "client_public.key" ]; then
+    echo "Sử dụng lại khóa Client cũ..."
+    CLIENT_PRIVATE_KEY=$(cat client_private.key)
+    CLIENT_PUBLIC_KEY=$(cat client_public.key)
+else
+    echo "Tạo khóa mới cho Client..."
+    wg genkey | tee client_private.key | wg pubkey > client_public.key
+    chmod 600 client_private.key
+    CLIENT_PRIVATE_KEY=$(cat client_private.key)
+    CLIENT_PUBLIC_KEY=$(cat client_public.key)
+fi
 
-# Tao iptables rules dua vao mode
-# Su dung -I (INSERT) thay vi -A (APPEND) de rules WireGuard duoc uu tien cao hon Docker
+# Tự động phát hiện tất cả các dải LAN
+echo ""
+echo "================================"
+echo "Tự động phát hiện các dải LAN"
+echo "================================"
+echo ""
+
+# Lấy tất cả các dải LAN (loại trừ loopback, docker, wireguard)
+LAN_NETWORKS=$(ip route | grep -v default | grep -v "169.254" | grep -v "docker" | grep -v "wg0" | grep -v "tun" | grep -v "lo" | awk '{print $1}' | grep -E "^[0-9]" | sort -u | tr '\n' ',' | sed 's/,$//')
+
+if [ -n "$LAN_NETWORKS" ]; then
+    echo "Các dải LAN đã phát hiện: $LAN_NETWORKS"
+    echo "Tự động cấu hình route cho tất cả các dải LAN..."
+    echo ""
+    
+    # Tạo AllowedIPs cho server (cho phép client route các dải này)
+    PEER_ALLOWED_IPS="10.0.0.2/32"
+    IFS=',' read -ra LAN_ARRAY <<< "$LAN_NETWORKS"
+    for LAN in "${LAN_ARRAY[@]}"; do
+        LAN=$(echo $LAN | xargs) # trim whitespace
+        PEER_ALLOWED_IPS="$PEER_ALLOWED_IPS, $LAN"
+    done
+    
+    # Tạo AllowedIPs cho client
+    CLIENT_ALLOWED_IPS="10.0.0.0/24"
+    for LAN in "${LAN_ARRAY[@]}"; do
+        LAN=$(echo $LAN | xargs)
+        CLIENT_ALLOWED_IPS="$CLIENT_ALLOWED_IPS, $LAN"
+    done
+    
+    echo "Sẽ cho phép route tới: $LAN_NETWORKS"
+    
+    # Lưu danh sách LAN để sử dụng trong PostUp/PostDown
+    LAN_ROUTES=""
+    POSTUP_ROUTES=""
+    POSTDOWN_ROUTES=""
+    
+else
+    echo "Không phát hiện được dải LAN nào"
+    PEER_ALLOWED_IPS="10.0.0.2/32"
+    CLIENT_ALLOWED_IPS="0.0.0.0/0"
+    LAN_ROUTES=""
+    POSTUP_ROUTES=""
+    POSTDOWN_ROUTES=""
+fi
+
+# Lấy thông tin port forwarding
+echo ""
+echo "================================"
+echo "Cấu hình Port Forwarding"
+echo "================================"
+echo ""
+echo "Chọn chế độ port forwarding:"
+echo "1) Forward dải port cụ thể (ví dụ: 20000-40000)"
+echo "2) Forward một số port nhất định (ví dụ: 80,443,30303)"
+echo "3) Không forward port nào (chỉ VPN thông thường)"
+read -p "Nhập lựa chọn (1/2/3): " MODE
+
+# Tạo iptables rules dựa vào mode
+# Sử dụng -I (INSERT) thay vì -A (APPEND) để rules WireGuard được ưu tiên cao hơn Docker
 if [ "$MODE" == "1" ]; then
-    read -p "Nhap port bat dau: " START_PORT
-    read -p "Nhap port ket thuc: " END_PORT
-    echo "Se forward port $START_PORT-$END_PORT ve client..."
-    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
-    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -D PREROUTING -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -D PREROUTING -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
+    read -p "Nhập port bắt đầu: " START_PORT
+    read -p "Nhập port kết thúc: " END_PORT
+    echo "Sẽ forward port $START_PORT-$END_PORT về client..."
+    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i wg0 -o $INTERFACE -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
+    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -D FORWARD -i wg0 -o $INTERFACE -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE; iptables -t nat -D PREROUTING -i $INTERFACE -p tcp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -D PREROUTING -i $INTERFACE -p udp --dport $START_PORT:$END_PORT -j DNAT --to-destination $CLIENT_IP"
 
 elif [ "$MODE" == "2" ]; then
-    read -p "Nhap cac port cach nhau boi dau phay (vi du: 80,443,30303): " PORTS
-    echo "Se forward port: $PORTS ve client..."
+    read -p "Nhập các port cách nhau bởi dấu phẩy (ví dụ: 80,443,30303): " PORTS
+    echo "Sẽ forward port: $PORTS về client..."
     
-    # Tao rules cho tung port voi INSERT de uu tien cao
-    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE"
-    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE"
+    # Tạo rules cho từng port với INSERT để ưu tiên cao
+    POSTUP="iptables -I FORWARD 1 -i wg0 -j ACCEPT; iptables -I FORWARD 1 -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i $INTERFACE -o wg0 -j ACCEPT; iptables -I FORWARD 1 -i wg0 -o $INTERFACE -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE"
+    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -D FORWARD -i wg0 -o $INTERFACE -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE"
     
     IFS=',' read -ra PORT_ARRAY <<< "$PORTS"
     for PORT in "${PORT_ARRAY[@]}"; do
@@ -64,40 +141,141 @@ elif [ "$MODE" == "2" ]; then
         POSTUP="$POSTUP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p tcp --dport $PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -I PREROUTING 1 -i $INTERFACE -p udp --dport $PORT -j DNAT --to-destination $CLIENT_IP"
         POSTDOWN="$POSTDOWN; iptables -t nat -D PREROUTING -i $INTERFACE -p tcp --dport $PORT -j DNAT --to-destination $CLIENT_IP; iptables -t nat -D PREROUTING -i $INTERFACE -p udp --dport $PORT -j DNAT --to-destination $CLIENT_IP"
     done
+
+elif [ "$MODE" == "3" ]; then
+    echo "Chế độ VPN thông thường (không forward port)..."
+    # Cấu hình FORWARD và MASQUERADE cơ bản + cho phép traffic giữa wg0 và interface chính
+    POSTUP="iptables -A FORWARD -i wg0 -j ACCEPT; iptables -A FORWARD -o wg0 -j ACCEPT; iptables -A FORWARD -i wg0 -o $INTERFACE -j ACCEPT; iptables -A FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -A POSTROUTING -o $INTERFACE -j MASQUERADE"
+    POSTDOWN="iptables -D FORWARD -i wg0 -j ACCEPT; iptables -D FORWARD -o wg0 -j ACCEPT; iptables -D FORWARD -i wg0 -o $INTERFACE -j ACCEPT; iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT; iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE"
+
 else
-    echo "Lua chon khong hop le!"
+    echo "Lựa chọn không hợp lệ!"
     exit 1
 fi
 
-# Dung WireGuard
-echo "Dung WireGuard..."
+# Dừng WireGuard nếu đang chạy
+echo ""
+echo "Dừng WireGuard nếu đang chạy..."
 wg-quick down wg0 2>/dev/null || true
 
-# Tao file cau hinh moi
-echo "Tạo cấu hình mới với port forwarding..."
+# Dọn dẹp iptables rules cũ
+echo "Dọn dẹp iptables rules cũ..."
+iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -o wg0 -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i $INTERFACE -o wg0 -j ACCEPT 2>/dev/null || true
+iptables -D FORWARD -i wg0 -o $INTERFACE -j ACCEPT 2>/dev/null || true
+iptables -t nat -D POSTROUTING -o $INTERFACE -j MASQUERADE 2>/dev/null || true
+
+# Tạo file cấu hình mới cho Server
+echo "Tạo cấu hình Server mới..."
 cat > /etc/wireguard/wg0.conf << EOF
 [Interface]
 Address = 10.0.0.1/24
 ListenPort = 51820
 PrivateKey = $SERVER_PRIVATE_KEY
+Table = off
 PostUp = $POSTUP
 PostDown = $POSTDOWN
 
 # Client 1
 [Peer]
 PublicKey = $CLIENT_PUBLIC_KEY
-AllowedIPs = 10.0.0.2/32
+AllowedIPs = $PEER_ALLOWED_IPS
 EOF
 
-# Khoi dong lai WireGuard
-echo "Khoi dong WireGuard voi cau hinh moi..."
-wg-quick up wg0
+# Tạo file cấu hình Client
+echo "Tạo/cập nhật cấu hình Client..."
+cat > /etc/wireguard/client.conf << EOF
+[Interface]
+PrivateKey = $CLIENT_PRIVATE_KEY
+Address = 10.0.0.2/24
+DNS = 8.8.8.8, 1.1.1.1
 
-# Cau hinh tren client
+[Peer]
+PublicKey = $SERVER_PUBLIC_KEY
+Endpoint = $SERVER_DOMAIN:51820
+AllowedIPs = $CLIENT_ALLOWED_IPS
+PersistentKeepalive = 25
+EOF
+
+# Cấu hình firewall (nếu có ufw)
+if command -v ufw &> /dev/null; then
+    echo "Cấu hình UFW firewall..."
+    ufw allow 51820/udp 2>/dev/null || true
+fi
+
+# Khởi động lại WireGuard
+echo "Khởi động WireGuard với cấu hình mới..."
+wg-quick up wg0
+systemctl enable wg-quick@wg0 2>/dev/null || true
+
+# Tạo QR code cho mobile
 echo ""
-echo "Copy toan bo doan code ben duoi sau do paste vao vps client"
+echo "================================"
+echo "QR Code cho Mobile Client:"
+echo "================================"
+if command -v qrencode &> /dev/null; then
+    qrencode -t ansiutf8 < /etc/wireguard/client.conf
+else
+    echo "Cài đặt qrencode để hiển thị QR code: apt install qrencode -y"
+fi
+
+# Cấu hình trên client
+echo ""
+echo "================================"
+echo "Hướng dẫn cấu hình trên Client"
+echo "================================"
+echo ""
+echo "Copy toàn bộ đoạn code bên dưới sau đó paste vào VPS/PC client:"
+echo ""
 echo "sudo apt install wireguard -y"
-echo "cat > /etc/wireguard/client.conf << EOF"
-echo "$(cat /etc/wireguard/client.conf)"
-echo "EOF"
-echo "wg-quick up wg0"
+echo "sudo bash -c 'cat > /etc/wireguard/wg0.conf << EOF"
+cat /etc/wireguard/client.conf
+echo "EOF'"
+echo "sudo wg-quick up wg0"
+echo "sudo systemctl enable wg-quick@wg0"
+echo ""
+echo "================================"
+echo "Hoàn tất cài đặt!"
+echo "================================"
+echo ""
+echo "Thông tin Server:"
+echo "  - Server Domain: $SERVER_DOMAIN"
+echo "  - Server Public Key: $SERVER_PUBLIC_KEY"
+echo "  - VPN Network: 10.0.0.0/24"
+if [ -n "$LAN_NETWORKS" ]; then
+    echo "  - LAN Networks: $LAN_NETWORKS"
+fi
+if [ "$MODE" == "1" ]; then
+    echo "  - Port Forwarding: $START_PORT-$END_PORT -> $CLIENT_IP"
+elif [ "$MODE" == "2" ]; then
+    echo "  - Port Forwarding: $PORTS -> $CLIENT_IP"
+elif [ "$MODE" == "3" ]; then
+    echo "  - Port Forwarding: Không có"
+fi
+echo ""
+echo "File cấu hình đã được tạo tại:"
+echo "  - Server: /etc/wireguard/wg0.conf"
+echo "  - Client: /etc/wireguard/client.conf"
+echo ""
+echo "Để tải file client về máy:"
+echo "  scp root@$SERVER_DOMAIN:/etc/wireguard/client.conf ."
+echo ""
+echo "Kiểm tra trạng thái:"
+echo "  sudo wg show"
+echo ""
+echo "Test kết nối LAN từ client:"
+if [ -n "$LAN_NETWORKS" ]; then
+    IFS=',' read -ra LAN_ARRAY <<< "$LAN_NETWORKS"
+    for LAN in "${LAN_ARRAY[@]}"; do
+        LAN=$(echo $LAN | xargs)
+        # Lấy IP đầu tiên trong dải để test
+        FIRST_IP=$(echo $LAN | cut -d'/' -f1 | awk -F'.' '{print $1"."$2"."$3".1"}')
+        echo "  ping $FIRST_IP"
+    done
+fi
+echo ""
+echo "================================"
+
+# Hiển thị trạng thái
+wg show

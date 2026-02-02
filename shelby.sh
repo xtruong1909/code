@@ -30,18 +30,10 @@ MAX_RETRY=3
 TIMEOUT=30
 
 # =====================================================
-# TIME GATE: KIEM TRA CHI CHAY VAO THU 5
+# TIME GATE: FAUCET HANG NGAY
 # =====================================================
-UTC_DAY="$(date -u +%u)"    # 1=Mon ... 4=Thu ... 7=Sun
-UTC_HOUR="$(date -u +%H)"
-
 SKIP_FAUCET=false
-if (( UTC_DAY == 4 )); then
-  echo "[$(date -u)] HOM NAY LA THU 5 -> CHAY FAUCET" >> "$LOG"
-  SKIP_FAUCET=false
-else
-  SKIP_FAUCET=true
-fi
+echo "[$(date -u)] FAUCET HANG NGAY -> CHAY FAUCET" >> "$LOG"
 
 # =====================================================
 # INIT
